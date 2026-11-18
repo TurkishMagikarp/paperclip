@@ -250,6 +250,8 @@ import {
   unprocessable,
 } from "../errors.js";
 import { privateJsonEtag } from "../middleware/private-json-etag.js";
+import { observeIssueListResponseBytes } from "./issue-list-response-bytes.js";
+import { readIssueDetailTail } from "./issue-detail-tail.js";
 import { createRequestPromiseMemo } from "../lib/request-promise-memo.js";
 import {
   assertBoard,
@@ -3303,10 +3305,6 @@ async function coordinateIssueListGet(input: {
   }
 }
 
-function estimatedJsonBytes(value: unknown): number {
-  return Buffer.byteLength(JSON.stringify(value), "utf8");
-}
-
 function logIssueListRequest(input: {
   req: Request;
   res: Response;
@@ -3314,10 +3312,10 @@ function logIssueListRequest(input: {
   requestKey: ReturnType<typeof issueListRequestKey>;
   startedAt: number;
   cacheStatus: IssueListCacheStatus;
-  bodyBytes: number;
   etagOutcome: "none" | "fresh" | "not_modified";
   identicalInFlightCount: number;
 }) {
+  const responseBytes = observeIssueListResponseBytes(input.res);
   input.res.once("finish", () => {
     const contentEncoding = input.res.getHeader("content-encoding");
     const contentLength = Number(input.res.getHeader("content-length"));
@@ -3334,7 +3332,7 @@ function logIssueListRequest(input: {
         requestCount: input.identicalInFlightCount,
         durationMs: Date.now() - input.startedAt,
         statusCode: input.res.statusCode,
-        responseBytes: input.bodyBytes,
+        responseBytes: responseBytes(),
         compressedBytes:
           contentEncoding && Number.isFinite(contentLength)
             ? contentLength
@@ -7686,11 +7684,12 @@ export function issueRoutes(
     return commentCreatedAtMs >= activeRunStartedAtMs;
   }
   async function getClosedIssueExecutionWorkspace(issue: {
+    companyId: string;
     executionWorkspaceId?: string | null;
   }) {
     if (!issue.executionWorkspaceId) return null;
-    const workspace = await executionWorkspacesSvc.getById(
-      issue.executionWorkspaceId,
+    const workspace = await executionWorkspacesSvc.getStoredById(
+      issue.companyId, issue.executionWorkspaceId,
     );
     if (!workspace || !isClosedIsolatedExecutionWorkspace(workspace))
       return null;
@@ -7920,9 +7919,9 @@ export function issueRoutes(
     companyId: string;
     projectId: string | null;
     goalId: string | null;
-  }) {
+  }, options: { workspaceProvider?: boolean } = {}) {
     const projectPromise = issue.projectId
-      ? projectsSvc.getById(issue.projectId)
+      ? projectsSvc.getById(issue.projectId, options)
       : Promise.resolve(null);
     const directGoalPromise = issue.goalId
       ? goalsSvc.getById(issue.goalId)
@@ -8603,7 +8602,6 @@ export function issueRoutes(
         requestKey,
         startedAt,
         cacheStatus: "retry",
-        bodyBytes: estimatedJsonBytes(body),
         etagOutcome: "none",
         identicalInFlightCount: coordinated.identicalInFlightCount,
       });
@@ -8625,9 +8623,6 @@ export function issueRoutes(
         requestKey,
         startedAt,
         cacheStatus: coordinated.cacheStatus,
-        bodyBytes: etagMatched
-          ? 0
-          : estimatedJsonBytes(coordinated.response.body),
         etagOutcome: etagMatched ? "not_modified" : "fresh",
         identicalInFlightCount: coordinated.identicalInFlightCount,
       });
@@ -8646,7 +8641,6 @@ export function issueRoutes(
       requestKey,
       startedAt,
       cacheStatus: coordinated.cacheStatus,
-      bodyBytes: estimatedJsonBytes(coordinated.response.body),
       etagOutcome: "none",
       identicalInFlightCount: coordinated.identicalInFlightCount,
     });
@@ -8925,7 +8919,7 @@ export function issueRoutes(
         : null;
 
     const currentExecutionWorkspacePromise = issue.executionWorkspaceId
-      ? executionWorkspacesSvc.getById(issue.executionWorkspaceId)
+      ? executionWorkspacesSvc.getStoredById(issue.companyId, issue.executionWorkspaceId, { includeRuntimeServices: true })
       : Promise.resolve(null);
     const [
       { project, goal },
@@ -9274,25 +9268,25 @@ export function issueRoutes(
       workProducts,
       createdFrom,
     ] = await Promise.all([
-      timing.time("project_goal", () => resolveIssueProjectAndGoal(issue)),
-      timing.time("ancestors", () => svc.getAncestors(issue.id)),
-      timing.time("mentions", () => svc.findMentionedProjectIds(issue.id, { includeCommentBodies: false })),
+      timing.time("project_goal", () => resolveIssueProjectAndGoal(issue, { workspaceProvider: false })),
+      timing.time("ancestors", () => svc.getAncestors(issue.id, { parentId: issue.parentId })),
+      timing.time("mentions", () => svc.findMentionedProjectIds(issue.id, { includeCommentBodies: false, issue })),
       timing.time("documents", () => documentsSvc.getIssueDocumentPayload(issue)),
-      timing.time("relations", () => svc.getRelationSummaries(issue.id)),
+      timing.time("relations", () => svc.getRelationSummaries(issue.id, { companyId: issue.companyId })),
       timing.time("blockers", () => svc
         .listBlockerAttention(issue.companyId, [issue])
         .then((map) => map.get(issue.id) ?? null)),
       timing.time("review", () => svc
         .listReviewAttention(issue.companyId, [issue])
         .then((map) => map.get(issue.id) ?? null)),
-      timing.time("references", () => issueReferencesSvc.listIssueReferenceSummary(issue.id)),
+      timing.time("references", () => issueReferencesSvc.listIssueReferenceSummary(issue.id, undefined, { companyId: issue.companyId })),
       timing.time("handoff", () => listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id])),
-      timing.time("retry", () => svc.getCurrentScheduledRetry(issue.id)),
+      timing.time("retry", () => svc.getCurrentScheduledRetry(issue.id, { companyId: issue.companyId })),
       timing.time("recovery", () => recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id)),
       inboxArchiveFieldsPromise,
       timing.time("channel", () => getExternalChannelBindingSummary(db, issue.companyId, issue.id)),
       timing.time("workspace", () => issue.executionWorkspaceId
-        ? executionWorkspacesSvc.getById(issue.executionWorkspaceId)
+        ? executionWorkspacesSvc.getStoredById(issue.companyId, issue.executionWorkspaceId, { includeRuntimeServices: true })
         : Promise.resolve(null)),
       timing.time("work_products", () => workProductsSvc.listForIssue(issue.id)),
       timing.time("created_from", () => resolveVisibleIssueCreationSource(req, issue)),
@@ -9319,8 +9313,12 @@ export function issueRoutes(
       Promise.all(mentionedProjects.map((mentionedProject) => canActorReadProject(req, mentionedProject))),
     ]);
     const visibleMentionedProjects = mentionedProjects.filter((_, index) => mentionedProjectVisibility[index]);
-    // Recovery revalidation may change the blocker; read it afterwards.
-    const executionBlocker = await timing.time("execution_blocker", () => getExecutionBlocker(db, issue.companyId, issue.id));
+    // Recovery revalidation may change these projections; don't start them before it.
+    const tail = await readIssueDetailTail(req.actor.type === "board" && res.destroyed,
+      () => timing.time("execution_blocker", () => getExecutionBlocker(db, issue.companyId, issue.id)),
+      () => timing.time("interruption", () => taskInterruptionPresentation(db, issue)),
+    );
+    if (!tail) return;
     res.setHeader("Server-Timing", timing.header());
     res.json({
       ...issue,
@@ -9330,8 +9328,8 @@ export function issueRoutes(
       ...(blockerAttention ? { blockerAttention } : {}),
       ...(reviewAttention ? { reviewAttention } : {}),
       successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
-      executionBlocker,
-      interruption: await taskInterruptionPresentation(db, issue),
+      executionBlocker: tail.executionBlocker,
+      interruption: tail.interruption,
       scheduledRetry,
       activeRecoveryAction: revalidatedActiveRecoveryAction,
       blockedBy: visibleRelations.blockedBy,
@@ -16767,7 +16765,7 @@ export function issueRoutes(
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const interactions =
-      await issueThreadInteractionService(db).listForIssue(id);
+      await issueThreadInteractionService(db).listForIssue(issue.id, issue);
     res.json(interactions);
   });
 
