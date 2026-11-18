@@ -2,10 +2,11 @@ import { AgentIdentity } from "@/components/AgentIdentity";
 import { memo, useMemo } from "react";
 import { Link } from "@/lib/router";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import type { Issue } from "@paperclipai/shared";
+import { ISSUE_SUMMARIES_MAX_IDS, type Issue, type IssueSummary } from "@paperclipai/shared";
 import { heartbeatsApi, type LiveRunForIssue } from "../api/heartbeats";
 import type { TranscriptEntry } from "../adapters";
 import { issuesApi } from "../api/issues";
+import { useAccountIdentity } from "../api/companies-query";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, relativeTime } from "../lib/utils";
 import { Clock3 } from "lucide-react";
@@ -98,23 +99,31 @@ export function ActiveAgentsPanel({
   const visibleRuns = useMemo(() => cardRuns.slice(0, cardLimit), [cardLimit, cardRuns]);
   const hiddenRunCount = Math.max(0, cardRuns.length - visibleRuns.length);
   const visibleIssueIds = useMemo(
-    () => [...new Set(visibleRuns.map((run) => run.issueId).filter((issueId): issueId is string => Boolean(issueId)))],
+    () => [...new Set(visibleRuns.map((run) => run.issueId).filter((issueId): issueId is string => Boolean(issueId)))].sort(),
     [visibleRuns],
   );
+  const issueIdBatches = useMemo(() => {
+    const batches: string[][] = [];
+    for (let index = 0; index < visibleIssueIds.length; index += ISSUE_SUMMARIES_MAX_IDS) {
+      batches.push(visibleIssueIds.slice(index, index + ISSUE_SUMMARIES_MAX_IDS));
+    }
+    return batches;
+  }, [visibleIssueIds]);
+  const { userId, settled: accountSettled } = useAccountIdentity();
 
   const issueQueries = useQueries({
-    queries: visibleIssueIds.map((issueId) => ({
-      queryKey: queryKeys.issues.detail(issueId),
-      queryFn: () => issuesApi.get(issueId),
+    queries: issueIdBatches.map((ids) => ({
+      queryKey: queryKeys.issues.summaryBatch(companyId, userId, ids),
+      queryFn: ({ signal }: { signal: AbortSignal }) => issuesApi.summaries(companyId, ids, { signal }),
+      enabled: !!companyId && accountSettled,
       staleTime: 30_000,
     })),
   });
 
   const issueById = useMemo(() => {
-    const map = new Map<string, Issue>();
+    const map = new Map<string, IssueSummary>();
     for (const query of issueQueries) {
-      const issue = query.data;
-      if (issue) map.set(issue.id, issue);
+      for (const issue of query.data ?? []) map.set(issue.id, issue);
     }
     return map;
   }, [issueQueries]);
@@ -148,7 +157,9 @@ export function ActiveAgentsPanel({
               transcript={transcriptByRun.get(run.id) ?? EMPTY_TRANSCRIPT}
               hasOutput={hasOutputForRun(run.id)}
               showTranscript={showTranscripts}
-              issueLoadFailed={issueQueries.some((query, index) => visibleIssueIds[index] === run.issueId && query.isError)}
+              issueLoadFailed={issueQueries.some((query, index) =>
+                !!run.issueId && issueIdBatches[index].includes(run.issueId)
+                && (query.isError || (query.isSuccess && !issueById.has(run.issueId))))}
               className={cardClassName}
             />
           ))}
