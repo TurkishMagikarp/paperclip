@@ -74,6 +74,10 @@ when the browser supports it. Hashed assets retain their immutable cache policy;
 byte-range responses retain their original representation. This reduces initial
 page downloads through bandwidth-limited HTTPS tunnels such as Tailscale Funnel.
 API responses and MCP transports keep their existing compression behavior.
+Content-hashed UI JS/CSS also get build-time Brotli/gzip sidecars, so supported
+clients avoid request-time compression for those files. See
+[Static UI precompression](static-ui-precompression.md) for transport behavior
+and installed npm-server adaptation.
 
 ## Quick Health Checks
 
