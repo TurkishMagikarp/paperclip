@@ -10,7 +10,7 @@ const prefix = "ui-assets/v1/";
 function assetPath(value: string): string | null {
   const relative = value.replace(/^\//, "");
   return relative.length <= 512 && relative.split("/").every(part => /^[a-zA-Z0-9_.-]+$/.test(part) && part !== "." && part !== "..")
-    && !relative.endsWith(".map") ? relative : null;
+    && !/\.(?:map|br|gz)$/i.test(relative) ? relative : null;
 }
 async function digest(stream: Readable) {
   const hash = createHash("sha256");
@@ -105,7 +105,7 @@ export function retainedUiAssets(provider: StorageProvider, options: { sleep?: (
       for (const entry of await fs.readdir(path.join(directory, relativeDirectory), { withFileTypes: true })) {
         const relative = path.posix.join(relativeDirectory, entry.name);
         if (entry.isDirectory()) { await visit(relative); continue; }
-        if (relative.endsWith(".map")) continue;
+        if (/\.(?:map|br|gz)$/i.test(relative)) continue;
         if (!entry.isFile() || !assetPath(relative)) throw new Error("Unsupported static build asset");
         assets.push({ filename: path.join(directory, relative), objectKey: `${prefix}${relative}` });
       }
