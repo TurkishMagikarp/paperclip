@@ -14,7 +14,10 @@ const GOLDEN = new URL("./fixtures/issue-detail-response.json", import.meta.url)
 
 function normalizeResponse(body: unknown, issuePrefix: string) {
   const ids = new Map<string, string>();
-  const text = JSON.stringify(body, null, 2)
+  const text = JSON.stringify(body, (key, value) =>
+    (key === "managedFolder" || key === "effectiveLocalFolder") && typeof value === "string"
+      ? value.replaceAll("\\", "/")
+      : value, 2)
     .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, (id) => {
       if (!ids.has(id)) ids.set(id, `<id:${ids.size}>`);
       return ids.get(id)!;
@@ -65,7 +68,7 @@ describeEmbeddedPostgres("GET /api/issues/:id statements per request", () => {
       const normalized = normalizeResponse(response!.body, fixture.issuePrefix);
       expect(response!.headers["server-timing"]).toMatch(/\bissue_interruption;dur=\d+/);
       if (process.env.PAPERCLIP_WRITE_ISSUE_DETAIL_GOLDEN) writeFileSync(GOLDEN, normalized);
-      expect(normalized).toBe(readFileSync(GOLDEN, "utf8"));
+      expect(normalized).toBe(readFileSync(GOLDEN, "utf8").replaceAll("\r\n", "\n"));
       expect(response!.body.ancestors.map((ancestor: { id: string }) => ancestor.id))
         .toEqual([fixture.parent.id, fixture.grandparent.id]);
       expect(response!.body.blockedBy.map((relation: { id: string }) => relation.id)).toEqual([fixture.blocker.id]);
