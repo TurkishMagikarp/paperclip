@@ -5,6 +5,8 @@ import { once } from "node:events";
 import { mkdtemp, open, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { gzipSync } from "node:zlib";
+import { randomBytes } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { idleAdmissionMiddleware, trackIdleRequestHandlers } from "../middleware/idle-admission.js";
 import { staticUiFiles } from "../middleware/static-ui.js";
@@ -36,13 +38,18 @@ async function close(listener: Server) {
   await new Promise<void>(resolve => listener.close(() => resolve()));
 }
 
-async function abortDownload(listener: Server, url: string) {
+async function abortDownload(listener: Server, url: string, headers: Record<string, string> = {}) {
   const address = listener.address() as { port: number };
   await new Promise<void>((resolve, reject) => {
-    const client = httpRequest({ host: "127.0.0.1", port: address.port, path: url }, res => {
+    const client = httpRequest({ host: "127.0.0.1", port: address.port, path: url, headers }, res => {
       if (res.statusCode !== 200) {
         res.resume();
         reject(new Error(`Unexpected static response: ${res.statusCode}`));
+        return;
+      }
+      if (headers["Accept-Encoding"] && res.headers["content-encoding"] !== headers["Accept-Encoding"]) {
+        res.resume();
+        reject(new Error("Expected a precompressed response"));
         return;
       }
       res.on("error", () => undefined);
@@ -57,6 +64,31 @@ async function abortDownload(listener: Server, url: string) {
 afterEach(() => stopTaskDrain());
 
 describe("static UI idle completion", () => {
+  it("releases an aborted precompressed file", async () => {
+    const root = await files(), before = idleWorkSnapshot().active, ended = deferred();
+    // A valid, large sidecar keeps the download open long enough to abort.
+    const source = Buffer.concat([randomBytes(8 * 1024 * 1024), Buffer.alloc(8 * 1024 * 1024)]);
+    await writeFile(path.join(root, "large-AbCd1234.js"), source);
+    await writeFile(path.join(root, "large-AbCd1234.js.gz"), gzipSync(source, { level: 1 }));
+    const app = express();
+    app.use(idleAdmissionMiddleware);
+    app.use((_req, res, next) => {
+      res.once("close", ended.resolve);
+      next();
+    });
+    app.use(staticUiFiles(root));
+    trackIdleRequestHandlers(app);
+    const listener = await listen(app);
+    try {
+      await abortDownload(listener, "/large-AbCd1234.js", { "Accept-Encoding": "gzip" });
+      await ended.promise;
+      expect(idleWorkSnapshot().active).toBe(before);
+    } finally {
+      await close(listener);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("releases an aborted file in a nested router", async () => {
     const root = await files(), before = idleWorkSnapshot().active, ended = deferred();
     const app = express(), nested = express.Router();
@@ -78,8 +110,13 @@ describe("static UI idle completion", () => {
     }
   });
 
-  it("releases a matched file after the client closes before lookup", async () => {
+  it.each(["identity", "gzip"])("releases a matched %s file after the client closes before lookup", async encoding => {
     const root = await files(), before = idleWorkSnapshot().active;
+    if (encoding === "gzip") {
+      const source = "export const value = 'late lookup';\n".repeat(2000);
+      await writeFile(path.join(root, "late-AbCd1234.js"), source);
+      await writeFile(path.join(root, "late-AbCd1234.js.gz"), gzipSync(source));
+    }
     const app = express(), entered = deferred(), ended = deferred(), proceed = deferred(), matched = deferred();
     app.use(idleAdmissionMiddleware);
     app.use(async (_req, res, next) => {
@@ -91,7 +128,11 @@ describe("static UI idle completion", () => {
     app.use(staticUiFiles(root, { setHeaders: () => matched.resolve() }));
     trackIdleRequestHandlers(app);
     const listener = await listen(app), address = listener.address() as { port: number };
-    const client = httpRequest({ host: "127.0.0.1", port: address.port, path: "/large.bin" });
+    const client = httpRequest({
+      host: "127.0.0.1", port: address.port,
+      path: encoding === "gzip" ? "/late-AbCd1234.js" : "/large.bin",
+      headers: { "Accept-Encoding": encoding },
+    });
     client.on("error", () => undefined);
     client.end();
     try {

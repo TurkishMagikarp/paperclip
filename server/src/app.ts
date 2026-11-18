@@ -23,6 +23,7 @@ import { idleAdmissionMiddleware, trackIdleRequestHandlers } from "./middleware/
 import { databaseOperationMiddleware } from "./middleware/database-operation.js";
 import { staticUiFiles } from "./middleware/static-ui.js";
 import { publishRetainedUiAssetsAtStartup, retainedUiAssets } from "./retained-ui-assets.js";
+import { blockUiSidecars } from "./middleware/precompressed-ui.js";
 import { createStorageProviderFromConfig } from "./storage/provider-registry.js";
 import { loadStorageConfig } from "./storage/config.js";
 import { isIdleTaskDrainActive, trackIdleWork } from "./services/task-admission.js";
@@ -1168,6 +1169,7 @@ export async function createApp(
       fs.existsSync(path.join(p, "index.html")),
     );
     if (uiDist) {
+      staticUi.use(blockUiSidecars);
       staticUi.use(staticUiCompression());
       // Hashed asset files (Vite emits them under /assets/<name>.<hash>.<ext>)
       // never change once built, so they can be cached aggressively.

@@ -1,9 +1,10 @@
 import express, { type RequestHandler } from "express";
 import { completeIdleReadOnlyResponse } from "./idle-admission.js";
+import { precompressedUiFiles } from "./precompressed-ui.js";
 
 export function staticUiFiles(root: string, options: Parameters<typeof express.static>[1] = {}): RequestHandler {
   const matches = new WeakMap<object, () => void>();
-  const serve = express.static(root, {
+  const serve = precompressedUiFiles(root, {
     ...options,
     setHeaders(res, filePath, stat) {
       options?.setHeaders?.(res, filePath, stat);

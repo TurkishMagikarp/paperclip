@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
+import { brotliCompressSync } from "node:zlib";
 import { afterEach, expect, it } from "vitest";
 import { isTransientStorageError, publishRetainedUiAssetsAtStartup, retainedUiAssets } from "../retained-ui-assets.js";
 import type { StorageProvider } from "../storage/types.js";
@@ -64,6 +65,38 @@ it("refuses a build which reuses a published name for different bytes", async ()
   await fs.writeFile(path.join(root, "chunk-hash.js"), "collision");
   await expect(retained.publish(root)).rejects.toThrow("collides");
   expect(objects.get("ui-assets/v1/chunk-hash.js")?.toString()).toBe("original");
+});
+
+it("does not publish sidecars or expose raw sidecars already in shared storage", async () => {
+  const root = await directory(), { provider, objects } = storage();
+  await fs.writeFile(path.join(root, "chunk-AbCd1234.js"), "original");
+  await fs.writeFile(path.join(root, "chunk-AbCd1234.js.br"), "brotli");
+  await fs.writeFile(path.join(root, "chunk-AbCd1234.js.gz"), "gzip");
+  const retained = retainedUiAssets(provider);
+  await retained.publish(root);
+  expect([...objects.keys()]).toEqual(["ui-assets/v1/chunk-AbCd1234.js"]);
+  objects.set("ui-assets/v1/chunk-AbCd1234.js.br", Buffer.from("must not be public"));
+  const app = express();
+  app.use("/assets", retained.serve);
+  await request(app).get("/assets/chunk-AbCd1234.js.br").expect(404);
+  await request(app).head("/assets/chunk-AbCd1234.js.gz").expect(404);
+});
+
+it("finishes idle accounting for precompressed GET, HEAD, and cache hits", async () => {
+  const root = await directory();
+  const source = "export const greeting = 'hello';\n".repeat(2000);
+  await fs.writeFile(path.join(root, "chunk-AbCd1234.js"), source);
+  await fs.writeFile(path.join(root, "chunk-AbCd1234.js.br"), brotliCompressSync(source));
+  const app = express(), before = idleWorkSnapshot().active;
+  app.use(idleAdmissionMiddleware);
+  app.use("/assets", staticUiFiles(root));
+  trackIdleRequestHandlers(app);
+  const response = await request(app).get("/assets/chunk-AbCd1234.js").set("Accept-Encoding", "br")
+    .expect(200).expect("Content-Encoding", "br");
+  await request(app).head("/assets/chunk-AbCd1234.js").set("Accept-Encoding", "br").expect(200);
+  await request(app).get("/assets/chunk-AbCd1234.js").set("Accept-Encoding", "br")
+    .set("If-None-Match", response.headers.etag).expect(304);
+  expect(idleWorkSnapshot().active).toBe(before);
 });
 
 // Staging, 2026-11-11: the bucket answered "SlowDown" (HTTP 503) while a new
