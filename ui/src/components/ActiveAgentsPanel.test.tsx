@@ -11,7 +11,11 @@ const mockHeartbeatsApi = vi.hoisted(() => ({
 }));
 
 const mockIssuesApi = vi.hoisted(() => ({
-  get: vi.fn(),
+  summaries: vi.fn(),
+}));
+
+vi.mock("../api/companies-query", () => ({
+  useAccountIdentity: () => ({ userId: null, settled: true }),
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -119,7 +123,7 @@ describe("ActiveAgentsPanel", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([1, 2, 3, 4, 5].map(createRun));
-    mockIssuesApi.get.mockRejectedValue(new Error("Issue not found"));
+    mockIssuesApi.summaries.mockRejectedValue(new Error("Issue not found"));
   });
 
   afterEach(() => {
@@ -247,11 +251,11 @@ describe("ActiveAgentsPanel", () => {
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
       createIssueRun(1, "65274215-0000-4000-8000-000000000000"),
     ]);
-    mockIssuesApi.get.mockResolvedValue(createIssue(
+    mockIssuesApi.summaries.mockResolvedValue([createIssue(
       "65274215-0000-4000-8000-000000000000",
       "PAP-3562",
       "Phase 4B: Implement LLM Wiki distillation UI",
-    ));
+    )]);
 
     const root = createRoot(container);
     const queryClient = new QueryClient({
@@ -268,7 +272,7 @@ describe("ActiveAgentsPanel", () => {
     await flushReact();
 
     await waitForMicrotaskAssertion(() => {
-      expect(mockIssuesApi.get).toHaveBeenCalledWith("65274215-0000-4000-8000-000000000000");
+      expect(mockIssuesApi.summaries).toHaveBeenCalledWith("company-1", ["65274215-0000-4000-8000-000000000000"], { signal: expect.any(AbortSignal) });
       const issueLink = [...container.querySelectorAll("a")].find((anchor) =>
         anchor.textContent?.includes("Phase 4B"),
       );
