@@ -10,6 +10,7 @@ import { createLifecycleDriver } from "./services/agent-lifecycle-driver.js";
 import { startAgentLifecycle } from "./services/agent-lifecycle.js";
 import { idleAdmissionMiddleware, trackIdleRequestHandlers } from "./middleware/idle-admission.js";
 import { staticUiFiles } from "./middleware/static-ui.js";
+import { blockUiSidecars } from "./middleware/precompressed-ui.js";
 import { isIdleTaskDrainActive, trackIdleWork } from "./services/task-admission.js";
 import { customerSuccessRoutes } from "./routes/customer-success.js";
 import { cloudWarmStandbyMiddleware } from "./middleware/cloud-warm-standby.js";
@@ -1120,6 +1121,7 @@ export async function createApp(
       fs.existsSync(path.join(p, "index.html")),
     );
     if (uiDist) {
+      staticUi.use(blockUiSidecars);
       staticUi.use(staticUiCompression());
       // Hashed asset files (Vite emits them under /assets/<name>.<hash>.<ext>)
       // never change once built, so they can be cached aggressively.
