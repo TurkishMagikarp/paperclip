@@ -49,6 +49,12 @@ and leaves all existing cases passive. Source identities are not grants.
 
 ### Task query performance
 
+Execution-blocker reads select process, lifecycle, and task-binding fields rather
+than full execution rows. Context retains typed task and pre-dispatch evidence;
+Runner profiles retain the adapter type and complete native execution input and
+workspace-sync receipts. Full result evidence stays available to the existing
+retry and workspace checks. Stored context, profiles, and output are unchanged.
+
 Run-context lookups use expression indexes for both `context_snapshot.issueId`
 and `context_snapshot.paperclipIssue.id`. Task creation provenance has its own
 company-scoped expression index that follows the query's native issue ID and
