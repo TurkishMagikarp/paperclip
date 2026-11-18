@@ -63,6 +63,7 @@ describeEmbeddedPostgres("GET /api/issues/:id statements per request", () => {
       }, { stacks: true });
 
       const normalized = normalizeResponse(response!.body, fixture.issuePrefix);
+      expect(response!.headers["server-timing"]).toMatch(/\bissue_interruption;dur=\d+/);
       if (process.env.PAPERCLIP_WRITE_ISSUE_DETAIL_GOLDEN) writeFileSync(GOLDEN, normalized);
       expect(normalized).toBe(readFileSync(GOLDEN, "utf8"));
       expect(response!.body.ancestors.map((ancestor: { id: string }) => ancestor.id))

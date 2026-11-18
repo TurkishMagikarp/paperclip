@@ -294,6 +294,7 @@ import {
   unprocessable,
 } from "../errors.js";
 import { privateJsonEtag } from "../middleware/private-json-etag.js";
+import { readIssueDetailTail } from "./issue-detail-tail.js";
 import { createRequestPromiseMemo } from "../lib/request-promise-memo.js";
 import {
   assertBoard,
@@ -10228,8 +10229,12 @@ export function issueRoutes(
       Promise.all(mentionedProjects.map((mentionedProject) => canActorReadProject(req, mentionedProject))),
     ]);
     const visibleMentionedProjects = mentionedProjects.filter((_, index) => mentionedProjectVisibility[index]);
-    // Recovery revalidation may change the blocker; read it afterwards.
-    const executionBlocker = await timing.time("execution_blocker", () => getExecutionBlocker(db, issue.companyId, issue.id));
+    // Recovery revalidation may change these projections; don't start them before it.
+    const tail = await readIssueDetailTail(req.actor.type === "board" && res.destroyed,
+      () => timing.time("execution_blocker", () => getExecutionBlocker(db, issue.companyId, issue.id)),
+      () => timing.time("interruption", () => taskInterruptionPresentation(db, issue)),
+    );
+    if (!tail) return;
     await recordAgentChildTaskRead(db, req, issue);
     res.setHeader("Server-Timing", timing.header());
     res.json({
@@ -10240,8 +10245,8 @@ export function issueRoutes(
       ...(blockerAttention ? { blockerAttention } : {}),
       ...(reviewAttention ? { reviewAttention } : {}),
       successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
-      executionBlocker,
-      interruption: await taskInterruptionPresentation(db, issue),
+      executionBlocker: tail.executionBlocker,
+      interruption: tail.interruption,
       scheduledRetry,
       activeRecoveryAction: revalidatedActiveRecoveryAction,
       // Always present, so a cleared stall replaces the cached list.
